@@ -175,7 +175,7 @@ def extract_component_docs(url: str, html: str) -> list[Document]:
 
 async def crawl(outfile: str | None) -> list[Document]:
     pmap = prefix_map()
-    urls = [build_url(sec, page) for sec, pages in pmap.items() for page in pages]
+    urls = [build_url(sec, page) for sec, pages in pmap.items() for page in pages if "rtl" not in page.lower()]
 
     html_map = await gather_pages(urls)
 

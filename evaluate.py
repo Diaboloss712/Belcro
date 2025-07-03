@@ -20,6 +20,7 @@ from ragas.metrics import (
     faithfulness,
 )
 import config as CFG
+import numpy as np
 
 UPSTAGE_API_KEY = CFG.UPSTAGE_API_KEY
 # ───────────────────────────────────────────────
@@ -142,6 +143,71 @@ def plot_results(df: pd.DataFrame, title: str, filename: str):
     plt.close()
 
 # ───────────────────────────────────────────────
+
+# ───────────────────────────────
+# 6. 시각화 함수
+def plot_embedding_metrics_bar(df: pd.DataFrame, title: str, filename: str):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    metrics = ["context_precision", "context_recall", "answer_relevancy", "faithfulness"]
+    method_labels = {
+        "e5-large": "E5-Large",
+        "bge-large": "BGE-Large",
+        "upstage": "Upstage"
+    }
+    methods = [method_labels.get(m, m) for m in df.index.tolist()]
+    bar_width = 0.2
+    index = np.arange(len(methods))
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    for i, metric in enumerate(metrics):
+        values = df[metric].values
+        ax.bar(index + i * bar_width, values, bar_width, label=metric)
+
+    ax.set_xlabel('Embedding Models')
+    ax.set_ylabel('Scores')
+    ax.set_title(title)
+    ax.set_xticks(index + bar_width * (len(metrics) - 1) / 2)
+    ax.set_xticklabels(methods)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(filename)
+    plt.close()
+
+def plot_retriever_precision_recall_bar(df: pd.DataFrame, title: str, filename: str):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    method_labels = {
+        "dense": "Dense",
+        "bm25": "Sparse",
+        "ensemble": "Ensemble"
+    }
+    methods = [method_labels.get(m, m) for m in df.index.tolist()]
+    precision = df["context_precision"].values
+    recall = df["context_recall"].values
+
+    bar_width = 0.35
+    index = np.arange(len(methods))
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.bar(index, precision, bar_width, label='Precision')
+    ax.bar(index + bar_width, recall, bar_width, label='Recall')
+
+    ax.set_xlabel('Retrievers')
+    ax.set_ylabel('Scores')
+    ax.set_title(title)
+    ax.set_xticks(index + bar_width / 2)
+    ax.set_xticklabels(methods)
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(filename)
+    plt.close()
+
+
+
 # 7. 실행
 if __name__ == "__main__":
     df = pd.read_parquet("data/docs_5.3.parquet")
@@ -153,5 +219,5 @@ if __name__ == "__main__":
     print("\n📊 Embedding 비교:\n", df_embed)
     print("\n📊 Retriever 비교:\n", df_retriever)
 
-    plot_results(df_embed, "Embedding 모델 비교 (RAGAS)", "embedding_comparison.png")
-    plot_results(df_retriever, "Retriever 구조 비교 (RAGAS)", "retriever_comparison.png")
+    plot_embedding_metrics_bar(df_embed, "Embedding 모델 성능 비교 (RAGAS)", "embedding_bar.png")
+    plot_retriever_precision_recall_bar(df_retriever, "Retriever 구조 비교 (RAGAS)", "retriever_bar.png")
