@@ -1,4 +1,5 @@
 
+import json
 import asyncio, concurrent.futures, re, textwrap
 from collections import defaultdict
 from html import unescape
@@ -63,7 +64,10 @@ def _dense_retriever():
 def _load_bm25_docs() -> List[Document]:
     pq = Path(f"data/docs_{CFG.DOC_VERSION}.parquet"); _ensure_parquet(pq)
     df = pd.read_parquet(pq)
-    return [Document(page_content=r.page_content, metadata=r.metadata) for _, r in df.iterrows()]
+    return [
+        Document(page_content=r["page_content"], metadata=json.loads(r["metadata"]))
+        for _, r in df.iterrows()
+    ]
 
 _BM25 = BM25Retriever.from_documents(_load_bm25_docs())
 
@@ -80,12 +84,8 @@ def get_retriever(prompt: str) -> EnsembleRetriever:
 # ───────────────────── 4. LLM 세팅 ─────────────────────────
 _LLM, _PARSER = ChatUpstage(api_key=CFG.UPSTAGE_API_KEY), StrOutputParser()
 
-_SYSTEM_TMPL = (
-    "You are a senior front-end engineer.\n"
-    f"Generate a minimal Bootstrap {CFG.DOC_VERSION} HTML snippet inside a ```body``` block,\n"
-    "then under a '## 설명' heading, write a one-paragraph explanation in Korean.\n"
-    "Do NOT output any <html>, <head>, or <body> tags—only their inner contents."
-)
+_SYSTEM_TMPL = ("You are a senior front-end engineer. "
+                f"Generate minimal Bootstrap {CFG.DOC_VERSION} HTML.")
 _PROMPT = ChatPromptTemplate.from_messages([("system", _SYSTEM_TMPL),
                                             ("user", "{input}")])
 
@@ -106,7 +106,8 @@ def _make_prompt(summary: str, comps: List[str], structs: List[str]) -> str:
 
         Components in context: {', '.join(sorted(comps))}
         Available classes: {', '.join(sorted(structs))}
-        Please follow the system prompt: 먼저 HTML 코드 블록을, 그 아래에 ‘## 설명’ 헤딩과 한국어 설명을 작성하세요.
+
+        Respond **only** with the <html> snippet.
     """).strip()
 
 def _select_docs_by_component(docs: List[Document], *, per_comp=1, limit=4) -> List[Document]:
@@ -131,38 +132,17 @@ def clean_html_snippet(raw: str) -> str:
 
 # ───────────────────── 6. 외부 API 함수 ────────────────────
 def chat(query: str) -> dict:
-    # 1) 요약·리트리버 등 기존 로직
     summary   = _summarize_query(query)
     retriever = get_retriever(summary)
     docs      = list(retriever.invoke(summary, k=8))
-    if not docs:
-        raise ValueError("No relevant documents")
+    if not docs: raise ValueError("No relevant documents")
 
-    picked  = _select_docs_by_component(docs)
-    structs = {cls for d in picked for cls in d.metadata.get("structure", [])}
-    comps   = {d.metadata["component"] for d in picked}
-    prompt  = _make_prompt(summary, list(comps), list(structs))
+    picked    = _select_docs_by_component(docs)
+    structs   = {cls for d in picked for cls in d.metadata.get("structure", [])}
+    comps     = {d.metadata["component"] for d in picked}
+    prompt    = _make_prompt(summary, list(comps), list(structs))
 
-    # 2) LLM 호출
-    raw = (_PROMPT | _LLM | _PARSER).invoke({"input": prompt}).strip()
+    raw_html  = (_PROMPT | _LLM | _PARSER).invoke({"input": prompt})
+    cleaned   = clean_html_snippet(raw_html)
 
-    raw = raw.replace("\\n", "").replace("\\", "")
-
-
-    # 3) 코드 블록과 설명 분리
-    code_match = re.search(r"```html\s*(.*?)\s*```", raw, re.S)
-    if code_match:
-        raw_code = code_match.group(1).strip()
-        # clean_html_snippet은 코드 전처리용
-        cleaned_code = clean_html_snippet(f"```html\n{raw_code}\n```")
-        # 설명은 코드 블록 뒤 원본 그대로
-        explanation = raw[code_match.end():].strip()
-    else:
-        # 코드 블록이 없으면 raw 전체를 코드로 간주
-        cleaned_code = clean_html_snippet(raw)
-        explanation = ""
-
-    # 4) 분리된 결과 반환
-    return {
-        "answer": cleaned_code + explanation,
-    }
+    return {"answer": cleaned}
