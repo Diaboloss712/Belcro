@@ -11,8 +11,7 @@ import config as CFG
 
 def _chunk_document(doc: Document, chunk_size: int = 1800, overlap: int = 300) -> List[Document]:
     base = doc.page_content.strip()
-    # 구조 요약 필요 시 여기에 추가
-    struct = ""  # 계층 구조나 요약 텍스트 (필요 시)
+    struct = ""
     html   = doc.metadata.get("example", "")
     full   = f"{base}\n\nStructure: {struct}\n\nExample:\n{html}"
 
@@ -21,8 +20,8 @@ def _chunk_document(doc: Document, chunk_size: int = 1800, overlap: int = 300) -
         end = start + chunk_size
         chunks.append(Document(
             page_content=full[start:end].strip(),
-            id=getattr(doc, "id", None),      # <--- id 유지!
-            metadata=doc.metadata             # <--- metadata는 아래서 sanitize
+            id=getattr(doc, "id", None),
+            metadata=doc.metadata
         ))
         start += chunk_size - overlap
     return chunks

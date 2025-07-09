@@ -1,5 +1,3 @@
-# llm.py (리팩토링 버전)
-
 import asyncio, concurrent.futures, re, textwrap
 from collections import defaultdict
 from html import unescape
@@ -22,7 +20,6 @@ _VEC: PineconeVectorStore | None = None
 _LLM = ChatUpstage(api_key=CFG.UPSTAGE_API_KEY)
 _PARSER = StrOutputParser()
 
-# ↓ DOC_VERSION 제거
 _SYSTEM_TMPL = (
     "You are a senior front-end engineer.\n"
     "Generate a minimal Bootstrap HTML snippet inside a ```body``` block,\n"
@@ -108,7 +105,6 @@ def _load_bm25_docs(doc_version: str) -> List[Document]:
         metadata=r.metadata) for _, r in df.iterrows()
         ]
 
-# ↓ doc_version 인자로 전달
 _BM25_CACHE: dict[str, BM25Retriever] = {}
 
 def get_retriever(prompt: str, doc_version: str) -> EnsembleRetriever:

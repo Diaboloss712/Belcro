@@ -46,46 +46,33 @@ def prefix_map() -> tuple[dict[str, List[str]], str]:
         _, section, slug = m.groups()
         if slug.lower() == "rtl" or section.lower() == "examples":
             continue
-        if section not in mapping:
-            mapping[section] = []
-        if slug not in mapping[section]:
-            mapping[section].append(slug)
+        mapping.setdefault(section, []).append(slug)
     return {k: sorted(v) for k, v in mapping.items()}, live_ver
 
 def extract_prefix_from_variables(soup) -> str | None:
-    prefixes = []
-    # Sass 변수 섹션에서 접두사 추출
-    section = soup.find("h3", id="sass-variables")
-    if not section:
+    header = soup.find(lambda tag: tag.name in {"h2", "h3"} and "sass variables" in tag.get_text(strip=True).lower())
+    if not header:
         return None
-    
-    # 코드 블록에서 변수 추출
-    code_block = section.find_next("pre", class_="language-scss")
+    code_block = header.find_next("pre", class_="language-scss")
     if not code_block:
         return None
-    
     code = code_block.get_text()
+    prefixes = []
     for line in code.splitlines():
         if line.strip().startswith("$"):
-            var_name = line.strip().split(":")[0].split("-")[0]
-            if len(var_name) > 1:
-                prefixes.append(var_name)
-    
-    if not prefixes:
-        return None
-    return Counter(prefixes).most_common(1)[0][0]
+            var_name = line.strip().split(":")[0].lstrip("$")
+            if "-" in var_name:
+                prefix = var_name.split("-")[0]
+                prefixes.append(prefix)
+    return Counter(prefixes).most_common(1)[0][0] if prefixes else None
 
 def extract_variables_table(soup, header_text, slug):
-    # 코드 블록에서 변수 추출
-    section = soup.find(lambda tag: tag.name in ["h2", "h3"] and 
-                       header_text.lower() in tag.get_text(strip=True).lower())
+    section = soup.find(lambda tag: tag.name in ["h2", "h3"] and header_text.lower() in tag.get_text(strip=True).lower())
     if not section:
         return []
-    
     code_block = section.find_next("pre", class_="language-scss")
     if not code_block:
         return []
-    
     variables = []
     code = code_block.get_text()
     for line in code.splitlines():
@@ -100,46 +87,73 @@ def extract_horizontal(soup, slug):
     css_vars = extract_variables_table(soup, "Variables", slug)
     sass_vars = extract_variables_table(soup, "Sass variables", slug)
     all_vars = css_vars + sass_vars
-    horizontal = sorted(set(all_vars))
-    return horizontal
+    return sorted(set(all_vars))
 
 def extract_structure(el: Tag, prefix: str, depth: int = 0, exclude_tags=("script", "style")) -> list[dict]:
     if el is None or el.name in exclude_tags:
         return []
     children_struct = []
     for child in el.find_all(recursive=False):
-        classes = [c for c in (child.get("class") or []) if c.startswith(prefix)]
-        if not classes:
-            children = extract_structure(child, prefix, depth + 1, exclude_tags)
-            if children:
-                node = {
-                    "classes": classes,
-                    "depth": depth,
-                    "children": children
-                }
-                children_struct.append(node)
-            continue
+        classes = [c for c in (child.get("class") or []) if prefix in c]
         node = {
             "classes": classes,
             "depth": depth,
             "children": extract_structure(child, prefix, depth + 1, exclude_tags)
         }
-        children_struct.append(node)
+        if classes or node["children"]:
+            children_struct.append(node)
     return children_struct
 
-def extract_keywords(soup, slug):
-    keywords = {slug, slug + "s"}
-    stopwords = {
-        "about", "example", "examples", "content types", "sizing", "text alignment",
-        "navigation", "images", "horizontal", "card styles", "card layout", "css"
-    }
+def extract_keywords(soup: BeautifulSoup, slug: str, prefix: str) -> list[str]:
+    raw_keywords = {slug, slug + "s", prefix}
     main = soup.find("main")
-    if main:
-        for tag in main.find_all(["h1", "h2"]):
-            text = tag.get_text(strip=True).lower()
-            if slug in text and text not in stopwords:
-                keywords.add(text)
-    return sorted(keywords)
+    if not main:
+        return sorted(raw_keywords)
+    for tag in main.find_all(["h1", "h2", "h3"]):
+        text = tag.get_text(strip=True)
+        if slug in text.lower() or prefix in text.lower():
+            raw_keywords.add(text)
+    for tag in main.find_all(True):
+        for cls in tag.get("class") or []:
+            if prefix in cls:
+                raw_keywords.add(cls)
+        id_ = tag.get("id")
+        if id_ and prefix in id_:
+            raw_keywords.add(id_)
+        for attr, val in tag.attrs.items():
+            if isinstance(val, str):
+                if prefix in val:
+                    raw_keywords.add(val)
+                if attr.startswith("data-") and prefix in attr:
+                    raw_keywords.add(attr)
+    cleaned_keywords = set()
+    for kw in raw_keywords:
+        kw = kw.strip()
+        if not kw or kw.lower().startswith("link to this section:") or kw.startswith("http"):
+            continue
+        if kw.startswith("#"):
+            kw = kw[1:]
+        cleaned_keywords.add(kw)
+    return sorted(cleaned_keywords)
+
+def extract_description(soup: BeautifulSoup) -> str:
+    lead = soup.select_one("main .bd-content p.lead")
+    if lead:
+        return lead.get_text(strip=True)
+    subtitle = soup.select_one("main .bd-subtitle p")
+    if subtitle:
+        return subtitle.get_text(strip=True)
+    return ""
+
+def extract_example(main: Tag) -> str:
+    for class_name in ["bd-example", "bd-example-snippet", "bd-code-snippet", "bd-example-row"]:
+        example = main.find("div", class_=class_name)
+        if example:
+            return str(example)
+    pre = main.find("pre")
+    if pre and pre.find("code"):
+        return str(pre)
+    return ""
 
 async def crawl_one(section: str, slug: str, ver: str) -> Document | None:
     url = f"https://getbootstrap.com/docs/{ver}/{section}/{slug}/"
@@ -150,35 +164,20 @@ async def crawl_one(section: str, slug: str, ver: str) -> Document | None:
     except Exception as e:
         print(f"{url} 요청 실패: {e}")
         return None
-
     try:
         soup = BeautifulSoup(html, "html.parser")
         main = soup.find("main")
         if not main:
             return None
-
-        # Bootstrap 5.3+에서 'bd-example' 대신 'example' 사용
-        example_div = main.find("div", class_="example") or main.find("div", class_="bd-example")
-        if not example_div:
+        example_html = extract_example(main)
+        if not example_html:
             return None
-
+        example_div = BeautifulSoup(example_html, "html.parser")
         prefix = extract_prefix_from_variables(soup) or slug
-
-        description = ""
-        h1 = main.find("h1")
-        if h1:
-            desc = h1.find_next_sibling("p")
-            if desc:
-                description = desc.get_text(strip=True)
-            else:
-                description = h1.get_text(strip=True)
-        if not description:
-            description = re.sub(r"\s+", " ", main.get_text(strip=True))[:300]
-
+        description = extract_description(soup)
         hierarchy = extract_structure(example_div, prefix)
         horizontal = extract_horizontal(soup, prefix)
-        keywords = extract_keywords(soup, slug)
-
+        keywords = extract_keywords(soup, slug, prefix)
         return Document(
             page_content=description,
             id=slug,
@@ -187,7 +186,7 @@ async def crawl_one(section: str, slug: str, ver: str) -> Document | None:
                 "section": section,
                 "slug": slug,
                 "description": description,
-                "example": str(example_div),
+                "example": example_html,
                 "hierarchy": json.dumps(hierarchy, ensure_ascii=False),
                 "horizontal": json.dumps(horizontal, ensure_ascii=False),
                 "is_component": True,
@@ -201,17 +200,11 @@ async def crawl_one(section: str, slug: str, ver: str) -> Document | None:
 async def crawl(*, outfile: str | None = None) -> list[Document]:
     mapping, ver = prefix_map()
     docs: list[Document] = []
-    tasks = []
-
-    for section, slugs in mapping.items():
-        for slug in slugs:
-            tasks.append(crawl_one(section, slug, ver))
-
+    tasks = [crawl_one(section, slug, ver) for section, slugs in mapping.items() for slug in slugs]
     for coro in tqdm_asyncio.as_completed(tasks, desc="Crawling pages", total=len(tasks)):
         doc = await coro
         if doc:
             docs.append(doc)
-
     if outfile:
         import pandas as pd
         df = pd.DataFrame([{
@@ -220,5 +213,4 @@ async def crawl(*, outfile: str | None = None) -> list[Document]:
             "metadata": d.metadata
         } for d in docs])
         df.to_parquet(outfile, index=False)
-
     return docs

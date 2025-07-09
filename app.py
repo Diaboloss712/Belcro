@@ -54,23 +54,19 @@ def structure_to_string(structure: list[dict], indent: int = 0) -> str:
 async def _verify_and_update():
     from crawling import prefix_map
 
-    # 1. 기존 메타에서 이전 버전 확인
     prev_ver = None
     if META_FILE.exists():
         meta = json.loads(META_FILE.read_text())
         prev_ver = meta.get("doc_version")
 
-    # 2. Live Bootstrap 문서 버전 감지
     mapping, live_ver = prefix_map()
     pq_path = DATA_DIR / f"docs_{live_ver}.parquet"
 
-    # 3. 버전 다르거나 파일이 없으면 크롤링
     if live_ver != prev_ver or not pq_path.exists():
         print(f"[update] Crawling triggered: meta={prev_ver} → live={live_ver}")
         docs = await crawl(outfile=str(pq_path))
         await asyncio.to_thread(embvector, docs, namespace=live_ver)
 
-        # 4. 새 버전으로 meta 업데이트
         CFG.COMPONENTS = sorted({d.metadata.get("component", d.metadata.get("section", "unknown")) for d in docs})
         META_FILE.write_text(json.dumps({
             "doc_version": live_ver,
@@ -87,7 +83,7 @@ async def bootstrap():
         CFG.COMPONENTS  = meta["components"]
         doc_version = meta["doc_version"]
     else:
-        doc_version = "0.0"  # fallback
+        doc_version = "0.0"
 
     print(f"[app] DOC_VERSION: {doc_version}")
     await asyncio.to_thread(ensure_vectorstore_ready, namespace=doc_version)
@@ -96,18 +92,13 @@ async def bootstrap():
 
 @app.post("/ask", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    # 1. 검색(색인) 또는 임베딩 기반 유사도 검색
-    docs = retrieve_docs(req.question)    # 예: [Document, ...] 리스트
+    docs = retrieve_docs(req.question)
     
-    # 2. 가장 relevant한 문서 1개 선택 (혹은 여러 개)
     doc = docs[0]
     
-    # 3. (여기서!) 구조 정보, 그룹 정보 복원
     structure = json.loads(doc.metadata["structure"])
     horizontal_groups = json.loads(doc.metadata["horizontal_groups"])
     
-    # 4. LLM 프롬프트 조립 (또는 사용자에게 직접 전달)
-    # 예시: 구조 요약을 prompt에 삽입
     struct_summary = structure_to_string(structure)
     prompt = f"""
     구조: {struct_summary}
