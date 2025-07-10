@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import functools
 import json
 import re
 from collections import Counter
-from typing import Dict, List
+from typing import List
 from urllib.parse import urlparse
 
 import httpx
@@ -14,7 +13,6 @@ from bs4 import BeautifulSoup, Tag
 from langchain.schema import Document
 from tqdm.asyncio import tqdm_asyncio
 
-import config as CFG
 
 _DOC_PATH_RE = re.compile(r"/docs/([^/]+)/([^/]+)/([^/]+)/?")
 

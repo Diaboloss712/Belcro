@@ -1,22 +1,23 @@
 from __future__ import annotations
 
+from fastmcp import FastMCP
+import mcp
 import asyncio, json, pathlib, uvicorn
 from datetime import datetime
-from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import config as CFG
 from crawling import crawl
 from embed import embvector
-from llm import set_vectorstore, chat as llm_chat, ensure_vectorstore_ready, _compiled_patterns
+from llm import chat as llm_chat, ensure_vectorstore_ready, _compiled_patterns
 
-# ─────────── 설정 ─────────────────────────────
 DATA_DIR   = pathlib.Path("data")
 META_FILE  = DATA_DIR / "meta.json"
 
-# ─────────── FastAPI 초기화 ──────────────────
-app = FastAPI(title="Bootstrap-RAG API")
+mcp  = FastMCP("belcro-v1")
+app  = mcp.app  
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -90,6 +91,7 @@ async def bootstrap():
     await _verify_and_update()
     _compiled_patterns._cache = {}
 
+@mcp.tool()
 @app.post("/ask", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     docs = retrieve_docs(req.question)
@@ -107,7 +109,6 @@ async def chat(req: ChatRequest):
     설명: {doc.metadata['description']}
     """
     
-    # 5. LLM 호출
     res = llm_chat(prompt)
     
     return ChatResponse(answer=res)

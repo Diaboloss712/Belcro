@@ -3,7 +3,6 @@ from tqdm import tqdm
 import json
 
 from langchain.schema import Document
-from pinecone import Pinecone, ServerlessSpec
 from langchain_upstage import UpstageEmbeddings
 from langchain_pinecone import PineconeVectorStore
 
