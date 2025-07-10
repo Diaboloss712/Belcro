@@ -20,9 +20,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 3. 이미지 빌드 (태그: ghcr.io/OWNER/REPO:latest)
       - name: Build the Docker image
         run: |
-          IMAGE_NAME=ghcr.io/${{ github.repository }}:latest
+          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]'):latest
           docker build -t $IMAGE_NAME .
           docker push $IMAGE_NAME
