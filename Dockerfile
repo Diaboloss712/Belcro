@@ -1,6 +1,13 @@
 FROM python:3.11-slim
 
 ENV HOME="/opt/poetry"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    gcc \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN curl -sSL https://install.python-poetry.org | python3 -
 
 ENV PATH="${HOME}/bin:$PATH"
