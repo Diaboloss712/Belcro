@@ -1,7 +1,5 @@
 FROM python:3.11-slim
 
-ENV HOME="/opt/poetry"
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gcc \
@@ -10,11 +8,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN curl -sSL https://install.python-poetry.org | python3 -
 
-ENV PATH="${HOME}/bin:$PATH"
+ENV PATH="/root/.local/bin:$PATH"
+
 WORKDIR /app
 
 COPY pyproject.toml poetry.lock ./
-RUN poetry install --no-root
+
+RUN poetry install --no-root --only default
 
 COPY . .
 
