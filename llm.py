@@ -4,7 +4,6 @@ from html import unescape
 from pathlib import Path
 from typing import Dict, List
 
-import pandas as pd
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain.schema import Document
