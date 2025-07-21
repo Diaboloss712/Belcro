@@ -4,6 +4,8 @@ pipeline {
     environment {
         IMAGE = 'ghcr.io/diaboloss712/belcro:latest'
         CREDENTIALS_ID = 'ghcr-credentials'
+        UPSTAGE_API_KEY = credentials('UPSTAGE_API_KEY')
+        PINECONE_API_KEY = credentials('PINECONE_API_KEY')
     }
     triggers {
         githubPush()
@@ -35,7 +37,10 @@ pipeline {
                 sh '''
                     docker stop belcro || true
                     docker rm belcro || true
-                    docker run -d --name belcro -p 8081:80 $IMAGE
+                    docker run -d --name belcro -p 8081:80
+                    -e UPSTAGE_API_KEY=$UPSTAGE_API_KEY
+                    -e PINECONE_API_KEY=$PINECONE_API_KEY
+                    $IMAGE
                 '''
             }
         }
