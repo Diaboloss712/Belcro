@@ -5,12 +5,12 @@ import mcp
 import asyncio, json, pathlib, uvicorn
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
 import config as CFG
 from crawling import crawl
 from embed import embvector
 from llm import chat as llm_chat, ensure_vectorstore_ready, _compiled_patterns
+from models import ChatRequest, ChatResponse
 
 DATA_DIR   = pathlib.Path("data")
 META_FILE  = DATA_DIR / "meta.json"
@@ -23,13 +23,6 @@ app.add_middleware(
     allow_origins=["*"], allow_credentials=True,
     allow_methods=["*"], allow_headers=["*"]
 )
-
-class ChatRequest(BaseModel):
-    question: str
-    context: str | None = None
-
-class ChatResponse(BaseModel):
-    answer: str
 
 def _merge(ctx: str | None, q: str) -> str:
     return f"{ctx.strip()}\nUser: {q}" if ctx else q
@@ -94,13 +87,12 @@ async def bootstrap():
 @mcp.tool()
 def chat_tool(req: ChatRequest) -> ChatResponse:
     docs = retrieve_docs(req.question)
-
     doc = docs[0]
-
+    
     structure = json.loads(doc.metadata["structure"])
     horizontal_groups = json.loads(doc.metadata["horizontal_groups"])
-
     struct_summary = structure_to_string(structure)
+
     prompt = f"""
     구조: {struct_summary}
     그룹: {horizontal_groups}
@@ -108,9 +100,13 @@ def chat_tool(req: ChatRequest) -> ChatResponse:
     설명: {doc.metadata['description']}
     """
 
-    res = llm_chat(prompt)
+    res = llm_chat(prompt, doc.metadata.get("doc_version", "0.0"))
 
-    return ChatResponse(answer=res)
+    return ChatResponse(
+        answer="LLM 응답 기반으로 코드 및 줄별 정보 반환",
+        code=res["code"],
+        lines=res["lines"]
+    )
 
 @app.post("/ask", response_model=ChatResponse)
 async def chat(req: ChatRequest):

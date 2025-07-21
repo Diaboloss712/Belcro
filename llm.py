@@ -4,7 +4,8 @@ from html import unescape
 from pathlib import Path
 from typing import Dict, List
 
-import pandas as pd
+# import pandas as pd
+import pyarrow.parquet as pd
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain.schema import Document
@@ -15,6 +16,7 @@ from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
 
 import config as CFG
+from parsers import parse_code_with_lines
 
 _VEC: PineconeVectorStore | None = None
 _LLM = ChatUpstage(api_key=CFG.UPSTAGE_API_KEY)
@@ -149,6 +151,24 @@ def clean_html_snippet(raw: str):
     stripped = stripped.replace("\\n", "\n")
     return unescape(stripped).strip()
 
+def build_class_table_from_docs(docs: List[Document]) -> dict[str, list[str]]:
+    table: dict[str, set[str]] = {}
+
+    for doc in docs:
+        tag = (doc.metadata.get("tag") or doc.metadata.get("component") or "").strip().lower()
+        classes = doc.metadata.get("horizontal_groups", [])
+        if not tag or not classes:
+            continue
+        table.setdefault(tag, set()).update(classes)
+
+    return {k: list(v) for k, v in table.items()}
+
+def extract_html_from_llm_output(raw: str) -> str:
+    match = re.search(r"```html\s*(.*?)\s*```", raw, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return clean_html_snippet(raw)
+
 def chat(query: str, doc_version: str):
     summary = _summarize_query(query)
     retriever = get_retriever(summary, doc_version)
@@ -157,22 +177,18 @@ def chat(query: str, doc_version: str):
         raise ValueError("No relevant documents")
 
     picked = _select_docs_by_component(docs)
-    structs = {cls for d in picked for cls in d.metadata.get("structure", [])}
     comps = {d.metadata["component"] for d in picked}
-    prompt = _make_prompt(summary, list(comps), list(structs))
+    structs = {cls for d in picked for cls in d.metadata.get("structure", [])}
+    class_table = build_class_table_from_docs(picked)
 
+    prompt = _make_prompt(summary, list(comps), list(structs))
     raw = (_PROMPT | _LLM | _PARSER).invoke({"input": prompt}).strip()
     raw = raw.replace("\\n", "").replace("\\", "")
 
-    code_match = re.search(r"```html\\s*(.*?)\\s*```", raw, re.S)
-    if code_match:
-        raw_code = code_match.group(1).strip()
-        cleaned_code = clean_html_snippet(f"```html\n{raw_code}\n```")
-        explanation = raw[code_match.end():].strip()
-    else:
-        cleaned_code = clean_html_snippet(raw)
-        explanation = ""
+    html_code = extract_html_from_llm_output(raw)
+    lines = parse_code_with_lines(html_code, class_table)
 
     return {
-        "answer": cleaned_code + explanation,
+        "code": html_code,
+        "lines": [line.dict() for line in lines]
     }
