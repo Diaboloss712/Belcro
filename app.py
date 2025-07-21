@@ -16,7 +16,7 @@ DATA_DIR   = pathlib.Path("data")
 META_FILE  = DATA_DIR / "meta.json"
 
 mcp  = FastMCP("belcro-v1")
-app  = mcp.app  
+app  = mcp.create_app()
 
 app.add_middleware(
     CORSMiddleware,
