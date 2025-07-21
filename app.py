@@ -92,6 +92,26 @@ async def bootstrap():
     _compiled_patterns._cache = {}
 
 @mcp.tool()
+def chat_tool(req: ChatRequest) -> ChatResponse:
+    docs = retrieve_docs(req.question)
+
+    doc = docs[0]
+
+    structure = json.loads(doc.metadata["structure"])
+    horizontal_groups = json.loads(doc.metadata["horizontal_groups"])
+
+    struct_summary = structure_to_string(structure)
+    prompt = f"""
+    구조: {struct_summary}
+    그룹: {horizontal_groups}
+    예시: {doc.metadata['example']}
+    설명: {doc.metadata['description']}
+    """
+
+    res = llm_chat(prompt)
+
+    return ChatResponse(answer=res)
+
 @app.post("/ask", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     docs = retrieve_docs(req.question)
