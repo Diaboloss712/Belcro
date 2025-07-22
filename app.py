@@ -1,22 +1,39 @@
-from __future__ import annotations
-
+from fastapi import FastAPI
 from fastmcp import FastMCP
 import mcp
 import asyncio, json, pathlib, uvicorn
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 import config as CFG
 from crawling import crawl
 from embed import embvector
 from llm import chat as llm_chat, ensure_vectorstore_ready, _compiled_patterns
 from models import ChatRequest, ChatResponse
+from llm import get_retriever
 
-DATA_DIR   = pathlib.Path("data")
-META_FILE  = DATA_DIR / "meta.json"
+DATA_DIR = pathlib.Path("data")
+META_FILE = DATA_DIR / "meta.json"
 
-mcp  = FastMCP("belcro-v1")
-app  = mcp.create_app()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if META_FILE.exists():
+        meta = json.loads(META_FILE.read_text())
+        CFG.COMPONENTS = meta["components"]
+        doc_version = meta["doc_version"]
+    else:
+        doc_version = "0.0"
+
+    print(f"[app] DOC_VERSION: {doc_version}")
+    await asyncio.to_thread(ensure_vectorstore_ready, namespace=doc_version)
+    await _verify_and_update()
+    _compiled_patterns._cache = {}
+
+    yield
+
+app = FastAPI(lifespan=lifespan)
+mcp = FastMCP.from_fastapi(app=app, name="belcro-v1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,9 +44,7 @@ app.add_middleware(
 def _merge(ctx: str | None, q: str) -> str:
     return f"{ctx.strip()}\nUser: {q}" if ctx else q
 
-from llm import get_retriever
-
-def retrieve_docs(query: str, doc_version: str):
+def retrieve_docs(query: str, doc_version: str = "0.0"):
     retriever = get_retriever(query, doc_version)
     return retriever.invoke(query, k=8)
 
@@ -61,7 +76,10 @@ async def _verify_and_update():
         docs = await crawl(outfile=str(pq_path))
         await asyncio.to_thread(embvector, docs, namespace=live_ver)
 
-        CFG.COMPONENTS = sorted({d.metadata.get("component", d.metadata.get("section", "unknown")) for d in docs})
+        CFG.COMPONENTS = sorted({
+            d.metadata.get("component", d.metadata.get("section", "unknown"))
+            for d in docs
+        })
         META_FILE.write_text(json.dumps({
             "doc_version": live_ver,
             "components": CFG.COMPONENTS,
@@ -70,25 +88,11 @@ async def _verify_and_update():
     else:
         print(f"[update] Skipped (already up to date): {live_ver}")
 
-@app.on_event("startup")
-async def bootstrap():
-    if META_FILE.exists():
-        meta = json.loads(META_FILE.read_text())
-        CFG.COMPONENTS  = meta["components"]
-        doc_version = meta["doc_version"]
-    else:
-        doc_version = "0.0"
-
-    print(f"[app] DOC_VERSION: {doc_version}")
-    await asyncio.to_thread(ensure_vectorstore_ready, namespace=doc_version)
-    await _verify_and_update()
-    _compiled_patterns._cache = {}
-
 @mcp.tool()
 def chat_tool(req: ChatRequest) -> ChatResponse:
     docs = retrieve_docs(req.question)
     doc = docs[0]
-    
+
     structure = json.loads(doc.metadata["structure"])
     horizontal_groups = json.loads(doc.metadata["horizontal_groups"])
     struct_summary = structure_to_string(structure)
@@ -111,12 +115,11 @@ def chat_tool(req: ChatRequest) -> ChatResponse:
 @app.post("/ask", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     docs = retrieve_docs(req.question)
-    
     doc = docs[0]
-    
+
     structure = json.loads(doc.metadata["structure"])
     horizontal_groups = json.loads(doc.metadata["horizontal_groups"])
-    
+
     struct_summary = structure_to_string(structure)
     prompt = f"""
     구조: {struct_summary}
@@ -124,11 +127,10 @@ async def chat(req: ChatRequest):
     예시: {doc.metadata['example']}
     설명: {doc.metadata['description']}
     """
-    
-    res = llm_chat(prompt)
-    
-    return ChatResponse(answer=res)
 
+    res = llm_chat(prompt)
+
+    return ChatResponse(answer=res)
 
 @app.get("/health")
 async def health():
@@ -142,4 +144,5 @@ async def check_update():
     return {"doc_version": meta["doc_version"], "components": len(meta.get("components", []))}
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    mcp.run(transport="http", host="0.0.0.0", port=8000)
+    # uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
