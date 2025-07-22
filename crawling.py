@@ -12,6 +12,8 @@ import requests
 from bs4 import BeautifulSoup, Tag
 from langchain.schema import Document
 from tqdm.asyncio import tqdm_asyncio
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 
 _DOC_PATH_RE = re.compile(r"/docs/([^/]+)/([^/]+)/([^/]+)/?")
@@ -199,16 +201,19 @@ async def crawl(*, outfile: str | None = None) -> list[Document]:
     mapping, ver = prefix_map()
     docs: list[Document] = []
     tasks = [crawl_one(section, slug, ver) for section, slugs in mapping.items() for slug in slugs]
+
     for coro in tqdm_asyncio.as_completed(tasks, desc="Crawling pages", total=len(tasks)):
         doc = await coro
         if doc:
             docs.append(doc)
+
     if outfile:
-        import pandas as pd
-        df = pd.DataFrame([{
+        rows = [{
             "id": d.id,
             "page_content": d.page_content,
-            "metadata": d.metadata
-        } for d in docs])
-        df.to_parquet(outfile, index=False)
+            "metadata": json.dumps(d.metadata, ensure_ascii=False),
+        } for d in docs]
+        table = pa.Table.from_pylist(rows)
+        pq.write_table(table, outfile)
+
     return docs

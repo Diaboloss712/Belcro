@@ -4,8 +4,7 @@ from html import unescape
 from pathlib import Path
 from typing import Dict, List
 
-# import pandas as pd
-import pyarrow.parquet as pd
+from pyarrow import parquet as pq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain.schema import Document
@@ -98,14 +97,20 @@ def _dense_retriever():
     return _vec().as_retriever(search_type="mmr", search_kwargs={"k": 3})
 
 def _load_bm25_docs(doc_version: str) -> List[Document]:
-    pq = Path(f"data/docs_{doc_version}.parquet")
-    _ensure_parquet(pq)
-    df = pd.read_parquet(pq)
-    return [Document(
-        page_content=r.page_content,
-        id=r.id,
-        metadata=r.metadata) for _, r in df.iterrows()
-        ]
+    path = Path(f"data/docs_{doc_version}.parquet")
+    _ensure_parquet(path)
+
+    table = pq.read_table(path)
+    columns = table.to_pydict()
+    docs = []
+    for i in range(len(columns["id"])):
+        doc = Document(
+            page_content=columns["page_content"][i],
+            id=columns["id"][i],
+            metadata=columns["metadata"][i]
+        )
+        docs.append(doc)
+    return docs
 
 _BM25_CACHE: dict[str, BM25Retriever] = {}
 
