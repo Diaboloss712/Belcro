@@ -44,7 +44,7 @@ pipeline {
                         docker stop belcro || true
                         docker rm belcro || true
 
-                        docker run -d --name belcro -p 8081:80 \\
+                        docker run -d --name belcro -p 8081:8000 \\
                             -e UPSTAGE_API_KEY=${UPSTAGE_API_KEY} \\
                             -e PINECONE_API_KEY=${PINECONE_API_KEY} \\
                             ${FULL_IMAGE}
