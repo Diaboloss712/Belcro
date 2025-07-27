@@ -89,7 +89,7 @@ async def _verify_and_update():
         print(f"[update] Skipped (already up to date): {live_ver}")
 
 @mcp.tool()
-def chat_tool(req: ChatRequest) -> ChatResponse:
+def chat_tool(req: ChatRequest, session_id: str) -> ChatResponse:
     docs = retrieve_docs(req.question)
     doc = docs[0]
 
