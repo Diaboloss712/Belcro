@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, root_path="/api")
 mcp = FastMCP.from_fastapi(app=app, name="belcro-v1")
 
 app.add_middleware(
