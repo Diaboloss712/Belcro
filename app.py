@@ -10,11 +10,41 @@ import config as CFG
 from crawling import crawl
 from embed import embvector
 from llm import chat as llm_chat, ensure_vectorstore_ready, _compiled_patterns
-from models import ChatRequest, ChatResponse
+from models import ChatRequest, ChatResponse, CodeLine
 from llm import get_retriever
 
 DATA_DIR = pathlib.Path("data")
 META_FILE = DATA_DIR / "meta.json"
+
+
+mcp = FastMCP(name="belcro-v1")
+
+def safe_json_load(metadata: dict, key: str) -> list:
+    raw = metadata.get(key, "[]")
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+    return raw if isinstance(raw, list) else []
+
+@mcp.tool()
+def chat_tool(req: ChatRequest) -> ChatResponse:
+    try:
+        res = llm_chat(req.question, doc_version="0.0")
+        return ChatResponse(
+            answer="아래 HTML 코드를 참고하세요.",
+            code=res["code"],
+            lines=[CodeLine(**line) for line in res["lines"]],
+            horizontal_options=res.get("horizontal_options", []),
+            selected_components=res.get("selected_components", [])
+        )
+    except Exception as e:
+        return ChatResponse(
+            answer=f"오류가 발생했습니다: {str(e)}",
+            code="",
+            lines=[]
+        )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -32,8 +62,16 @@ async def lifespan(app: FastAPI):
 
     yield
 
-app = FastAPI(lifespan=lifespan, root_path="/api")
-mcp = FastMCP.from_fastapi(app=app, name="belcro-v1")
+mcp_app = mcp.http_app()
+
+@asynccontextmanager
+async def merged_lifespan(app: FastAPI):
+    async with mcp_app.lifespan(app):
+        async with lifespan(app):
+            yield
+
+app = FastAPI(lifespan=merged_lifespan, root_path="/api")
+app.mount("/mcp", mcp_app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,18 +85,6 @@ def _merge(ctx: str | None, q: str) -> str:
 def retrieve_docs(query: str, doc_version: str = "0.0"):
     retriever = get_retriever(query, doc_version)
     return retriever.invoke(query, k=8)
-
-def structure_to_string(structure: list[dict], indent: int = 0) -> str:
-    """계층 구조 트리를 읽기 좋은 문자열로 요약"""
-    lines = []
-    for node in structure:
-        tag = node.get("tag", "div")
-        classes = "." + ".".join(node.get("classes", [])) if node.get("classes") else ""
-        prefix = "  " * indent
-        lines.append(f"{prefix}{tag}{classes}")
-        if node.get("children"):
-            lines.append(structure_to_string(node["children"], indent + 1))
-    return "\n".join(lines)
 
 async def _verify_and_update():
     from crawling import prefix_map
@@ -88,49 +114,21 @@ async def _verify_and_update():
     else:
         print(f"[update] Skipped (already up to date): {live_ver}")
 
-@mcp.tool()
-def chat_tool(req: ChatRequest, session_id: str) -> ChatResponse:
-    docs = retrieve_docs(req.question)
-    doc = docs[0]
-
-    structure = json.loads(doc.metadata["structure"])
-    horizontal_groups = json.loads(doc.metadata["horizontal_groups"])
-    struct_summary = structure_to_string(structure)
-
-    prompt = f"""
-    구조: {struct_summary}
-    그룹: {horizontal_groups}
-    예시: {doc.metadata['example']}
-    설명: {doc.metadata['description']}
-    """
-
-    res = llm_chat(prompt, doc.metadata.get("doc_version", "0.0"))
-
-    return ChatResponse(
-        answer="LLM 응답 기반으로 코드 및 줄별 정보 반환",
-        code=res["code"],
-        lines=res["lines"]
-    )
-
 @app.post("/ask", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    docs = retrieve_docs(req.question)
-    doc = docs[0]
-
-    structure = json.loads(doc.metadata["structure"])
-    horizontal_groups = json.loads(doc.metadata["horizontal_groups"])
-
-    struct_summary = structure_to_string(structure)
-    prompt = f"""
-    구조: {struct_summary}
-    그룹: {horizontal_groups}
-    예시: {doc.metadata['example']}
-    설명: {doc.metadata['description']}
-    """
-
-    res = llm_chat(prompt)
-
-    return ChatResponse(answer=res)
+    try:
+        res = llm_chat(req.question, doc_version="0.0")
+        return ChatResponse(
+            answer="아래 HTML 코드를 참고하세요.",
+            code=res["code"],
+            lines=[CodeLine(**line) for line in res["lines"]]
+        )
+    except Exception as e:
+        return ChatResponse(
+            answer=f"오류가 발생했습니다: {str(e)}",
+            code="",
+            lines=[]
+        )
 
 @app.get("/health")
 async def health():
@@ -144,5 +142,5 @@ async def check_update():
     return {"doc_version": meta["doc_version"], "components": len(meta.get("components", []))}
 
 if __name__ == "__main__":
-    mcp.run(transport="http", host="0.0.0.0", port=8000)
-    # uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    # mcp.run(transport="http", host="0.0.0.0", port=8000)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True, timeout_keep_alive=60)

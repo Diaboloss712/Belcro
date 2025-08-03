@@ -11,6 +11,8 @@ class ChatResponse(BaseModel):
     answer: str
     code: str
     lines: List[CodeLine]
+    horizontal_options: List[str] = []
+    selected_components: List[str] = []
 
 class ChatRequest(BaseModel):
     question: str
