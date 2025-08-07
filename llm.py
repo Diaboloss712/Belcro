@@ -1,3 +1,4 @@
+import ast
 import json
 import asyncio
 import re
@@ -19,6 +20,7 @@ from pinecone import Pinecone, ServerlessSpec
 
 import config as CFG
 from parsers import parse_code_with_lines
+from crawling import crawl
 
 _VEC: PineconeVectorStore | None = None
 _LLM = ChatUpstage(api_key=CFG.UPSTAGE_API_KEY)
@@ -36,6 +38,16 @@ _QSUM_PROMPT = ChatPromptTemplate.from_messages([
     ("system", "Summarize the user request into ONE short sentence, focusing on desired Bootstrap components and actions. Do NOT add explanations or markup."),
     ("user", "{query}")
 ])
+
+def safe_list(val):
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        try:
+            return ast.literal_eval(val)
+        except Exception:
+            return []
+    return []
 
 def set_vectorstore(vs: PineconeVectorStore):
     global _VEC
@@ -75,12 +87,16 @@ def _compiled_patterns() -> Dict[str, re.Pattern]:
     key = tuple(CFG.COMPONENTS)
     if key in _compiled_patterns_cache:
         return _compiled_patterns_cache[key]
-    pats = {c: re.compile(rf"\b(?:{'|'.join(map(re.escape, _variants(c.lower())))})(?!-)\b", re.I)
-            for c in CFG.COMPONENTS}
+    pats = {
+        c: re.compile(rf"\\b(?:{'|'.join(map(re.escape, _variants(str(c).lower())))})\\b(?!-)\b", re.I)
+        for c in CFG.COMPONENTS if isinstance(c, str)
+    }
     _compiled_patterns_cache[key] = pats
     return pats
 
 def _extract_components(text: str) -> List[str]:
+    if not isinstance(text, str):
+        raise TypeError(f"Expected string in _extract_components, got {type(text)}")
     low = text.lower()
     return [c for c, p in _compiled_patterns().items() if p.search(low)]
 
@@ -101,15 +117,25 @@ def _load_bm25_docs(doc_version: str) -> List[Document]:
     path = Path(f"data/docs_{doc_version}.parquet")
     _ensure_parquet(path)
     table = pq.read_table(path)
-    columns = table.to_pydict()
+
     docs = []
-    for i in range(len(columns["id"])):
-        metadata_raw = columns["metadata"][i]
-        metadata = json.loads(metadata_raw) if isinstance(metadata_raw, str) else metadata_raw
+    for row in table.to_pylist():
+        metadata = {}
+        for key in [
+            "url", "section", "slug", "description", "example",
+            "structure", "horizontal_groups", "keywords", "style_categories", "component"
+        ]:
+            val = row.get(key)
+            if key in ["structure", "horizontal_groups", "keywords"]:
+                try:
+                    val = json.loads(val)
+                except Exception:
+                    val = []
+            metadata[key] = val
         docs.append(Document(
-            page_content=columns["page_content"][i],
-            id=columns["id"][i],
-            metadata=metadata
+            page_content=row.get("page_content", ""),
+            metadata=metadata,
+            id=row.get("id", "")
         ))
     return docs
 
@@ -128,11 +154,14 @@ def get_retriever(prompt: str, doc_version: str) -> EnsembleRetriever:
     return EnsembleRetriever(retrievers=base, weights=base_w)
 
 def _summarize_query(q: str) -> str:
-    return (_QSUM_PROMPT | _LLM | _PARSER).invoke({"query": q}).strip()
+    result = (_QSUM_PROMPT | _LLM | _PARSER).invoke({"query": q})
+    if not isinstance(result, str):
+        raise TypeError(f"LLM summary must return string, got {type(result)} → {result}")
+    return result.strip()
 
 def _make_prompt(summary: str, comps: List[str], structs: List[str],
-                 horizontal: list[str] = None,
-                 hierarchy: list[str] = None) -> str:
+                  horizontal: list[str] = None,
+                  hierarchy: list[str] = None) -> str:
     prompt = f"""User request: {summary}
 Components in context: {', '.join(sorted(comps))}
 Available classes: {', '.join(sorted(structs))}"""
@@ -146,19 +175,25 @@ Available classes: {', '.join(sorted(structs))}"""
     prompt += "\n\nPlease follow the system prompt: 먼저 HTML 코드 블록을, 그 아래에 '## 설명' 헤딩과 한국어 설명을 작성하세요."
     return prompt.strip()
 
-
 def _select_docs_by_component(docs: List[Document], *, per_comp=1, limit=4) -> List[Document]:
     bucket: defaultdict[str, List[Document]] = defaultdict(list)
     for d in docs:
+        if not hasattr(d, 'metadata') or not isinstance(d.metadata, dict):
+            continue
         c = d.metadata.get("slug", "unknown")
+        if not isinstance(c, str):
+            continue
         if len(bucket[c]) < per_comp:
             bucket[c].append(d)
     picked: List[Document] = []
     for d in docs:
-        c = d.metadata["slug"]
+        c = d.metadata.get("slug")
+        if not isinstance(c, str):
+            continue
         while bucket[c]:
             picked.append(bucket[c].pop(0))
-            if len(picked) >= limit: return picked
+            if len(picked) >= limit:
+                return picked
     return picked
 
 def clean_html_snippet(raw: str):
@@ -172,20 +207,21 @@ def extract_html_from_llm_output(raw: str) -> str:
         return match.group(1).strip()
     return clean_html_snippet(raw)
 
-def build_class_tables_from_docs(docs: List[Document]) -> tuple[
-    dict[str, list[str]],  # horizontal
-    dict[str, list[str]]   # hierarchy
-]:
+def build_class_tables_from_docs(docs: List[Document]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     h_table: dict[str, set[str]] = {}
     hier_table: dict[str, set[str]] = {}
 
     for doc in docs:
-        slug = doc.metadata.get("slug", "").strip().lower()
-        if not slug:
+        if not hasattr(doc, 'metadata') or not isinstance(doc.metadata, dict):
             continue
 
-        horizontal = doc.metadata.get("horizontal_groups", [])
-        hierarchy = doc.metadata.get("hierarchy_groups", [])
+        slug = doc.metadata.get("slug", "")
+        if not isinstance(slug, str):
+            continue
+        slug = slug.strip().lower()
+
+        horizontal = safe_list(doc.metadata.get("horizontal_groups", []))
+        hierarchy = safe_list(doc.metadata.get("hierarchy_groups", []))
 
         if horizontal:
             h_table.setdefault(slug, set()).update(horizontal)
@@ -217,13 +253,29 @@ def chat(query: str, doc_version: str):
         raise ValueError("No relevant documents")
 
     picked = _select_docs_by_component(docs)
-    comps = {d.metadata.get("component", d.metadata.get("slug", "unknown")) for d in picked}
-    structs = {cls for d in picked for cls in d.metadata.get("structure", [])}
-    class_table = build_class_tables_from_docs(picked)
+    
+    comps = set()
+    structs = set()
+    for d in picked:
+        if not isinstance(d.metadata, dict):
+            continue
+        
+        slug_value = d.metadata.get("slug")
+        if isinstance(slug_value, str):
+            comps.add(slug_value)
+            
+        structure_list = safe_list(d.metadata.get("structure", []))
+        if isinstance(structure_list, list):
+            for cls in structure_list:
+                if isinstance(cls, str):
+                    structs.add(cls)
 
     horizontal_table, hierarchy_table = build_class_tables_from_docs(picked)
 
-    prompt = _make_prompt(summary, list(comps), list(structs))
+    prompt = _make_prompt(summary, list(comps), list(structs),
+                          horizontal=[h for v in horizontal_table.values() for h in v],
+                          hierarchy=[h for v in hierarchy_table.values() for h in v])
+
     raw = (_PROMPT | _LLM | _PARSER).invoke({"input": prompt}).strip()
     raw = raw.replace("\\n", "").replace("\\", "")
 
@@ -239,7 +291,7 @@ def chat(query: str, doc_version: str):
     return {
         "code": html_code,
         "lines": [line.dict() for line in lines],
-        "selected_components": sorted(comps),
+        "selected_components": sorted(list(comps)),
         "horizontal_options": horizontal_options,
         "hierarchy_options": hierarchy_options,
         "structure": list(structs)

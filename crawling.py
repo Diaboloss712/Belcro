@@ -15,7 +15,6 @@ from tqdm.asyncio import tqdm_asyncio
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-
 _DOC_PATH_RE = re.compile(r"/docs/([^/]+)/([^/]+)/([^/]+)/?")
 
 @functools.cache
@@ -155,6 +154,13 @@ def extract_example(main: Tag) -> str:
         return str(pre)
     return ""
 
+def infer_style_category(section: str, slug: str, prefix: str) -> list[str]:
+    known_styles = ["utilities", "content", "layout", "helpers", "components"]
+    for style in known_styles:
+        if section == style or slug.startswith(style) or prefix.startswith(style):
+            return [style]
+    return []
+
 async def crawl_one(section: str, slug: str, ver: str) -> Document | None:
     url = f"https://getbootstrap.com/docs/{ver}/{section}/{slug}/"
     try:
@@ -175,9 +181,10 @@ async def crawl_one(section: str, slug: str, ver: str) -> Document | None:
         example_div = BeautifulSoup(example_html, "html.parser")
         prefix = extract_prefix_from_variables(soup) or slug
         description = extract_description(soup)
-        hierarchy = extract_structure(example_div, prefix)
-        horizontal = extract_horizontal(soup, prefix)
+        structure = extract_structure(example_div, prefix)
+        horizontal_groups = extract_horizontal(soup, prefix)
         keywords = extract_keywords(soup, slug, prefix)
+        style_categories = infer_style_category(section, slug, prefix)
         return Document(
             page_content=description,
             id=slug,
@@ -187,10 +194,11 @@ async def crawl_one(section: str, slug: str, ver: str) -> Document | None:
                 "slug": slug,
                 "description": description,
                 "example": example_html,
-                "hierarchy": json.dumps(hierarchy, ensure_ascii=False),
-                "horizontal": json.dumps(horizontal, ensure_ascii=False),
-                "is_component": True,
+                "structure": json.dumps(structure, ensure_ascii=False),
+                "horizontal_groups": json.dumps(horizontal_groups, ensure_ascii=False),
                 "keywords": keywords,
+                "style_categories": style_categories,
+                "component": section.lower() == "components",
             },
         )
     except Exception as e:
@@ -208,11 +216,23 @@ async def crawl(*, outfile: str | None = None) -> list[Document]:
             docs.append(doc)
 
     if outfile:
-        rows = [{
-            "id": d.id,
-            "page_content": d.page_content,
-            "metadata": json.dumps(d.metadata, ensure_ascii=False),
-        } for d in docs]
+        rows = []
+        for d in docs:
+            meta = d.metadata
+            rows.append({
+                "id": d.id,
+                "page_content": d.page_content,
+                "url": meta["url"],
+                "section": meta["section"],
+                "slug": meta["slug"],
+                "description": meta["description"],
+                "example": meta["example"],
+                "structure": meta["structure"],
+                "horizontal_groups": meta["horizontal_groups"],
+                "component": meta["component"],
+                "style_categories": meta["style_categories"],
+                "keywords": json.dumps(meta["keywords"], ensure_ascii=False),
+            })
         table = pa.Table.from_pylist(rows)
         pq.write_table(table, outfile)
 

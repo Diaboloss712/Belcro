@@ -3,7 +3,7 @@ from typing import List, Optional
 
 class CodeLine(BaseModel):
     line: int
-    tag: str
+    tag: Optional[str]
     classes: List[str]
     available_horizontal: List[str]
 
